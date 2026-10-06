@@ -23,7 +23,8 @@ const state = surface?.state ?? {
   observer: null,
   quietTimer: null,
   recovered: false,
-  lastCatalog: null
+  lastCatalog: null,
+  mutations: 0
 };
 
 const pointerController = createPointerController({
@@ -167,7 +168,14 @@ function finish(payload) {
 
 function snapshot(input = {}) {
   const result = discovery.snapshot(input);
-  state.lastCatalog = result.elements.map(item => (
+  // format:"compact" returns { tabId, url, title, revision, elementCount, text }
+  // and carries no elements array, so result.elements.map here threw a TypeError.
+  // executeScript rejects on a throw, and the rejection was reported as "Page
+  // returned no result for browser_snapshot; the tab may be navigating or
+  // crashed" -- an actionable DOM bug that looked like a dead tab. The catalog
+  // only feeds the action diff, so derive it from whichever shape came back.
+  const items = Array.isArray(result.elements) ? result.elements : [];
+  state.lastCatalog = items.map(item => (
     item.value === undefined ? { role: item.role, name: item.name } : { role: item.role, name: item.name, value: item.value }
   ));
   return result;
@@ -427,6 +435,12 @@ function network(input = {}) {
 window.__fastMcp = { snapshot, inventory, catalog: discovery.catalog, resolve, locate, targetOf, applySelect, actionClick, fill, fillForm, press, select, wait, waitFor, act, screenshotTarget, scroll, pointer, upload, network, state };
 if (!state.observer) {
   // Re-injection would otherwise stack one observer per MCP call.
-  state.observer = new MutationObserver(() => { clearTimeout(state.quietTimer); state.quietTimer = setTimeout(resetRefs, 100); });
+  // Counting mutations instead of resetting the store is what keeps refs usable on
+  // pages with a live timer: a countdown or carousel leaves a >100ms quiet window
+  // roughly once a second, so the old debounced reset expired every ref about once
+  // a second and no click could ever resolve one. Refs are keyed by element
+  // identity and revalidated with isConnected on resolve, so churn is handled
+  // there instead of by throwing the whole store away.
+  state.observer = new MutationObserver(() => { state.mutations += 1; });
   state.observer.observe(document.documentElement, { subtree: true, childList: true });
 }
