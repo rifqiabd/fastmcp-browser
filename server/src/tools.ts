@@ -2,7 +2,7 @@ import type { BrowserBridge } from './bridge.js';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { appendStep, normalizeStep } from './record.js';
-import { activeRecordFile } from './recorder.js';
+import { activeRecordFile, noteRecorded } from './recorder.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.txt': 'text/plain',
@@ -268,7 +268,7 @@ function maybeRecord(name: string, params: Record<string, unknown>): void {
     if (!file) return;
     const step = normalizeStep(name, params);
     if (!step) return;
-    void appendStep(file, step).catch((error: Error) => {
+    void appendStep(file, step).then(() => noteRecorded()).catch((error: Error) => {
       process.stderr.write(`fastmcp-browser: failed to record ${name} to ${file}: ${error.message}\n`);
     });
   } catch {

@@ -8,6 +8,9 @@ const fields = {
   tabs: document.querySelector('#tabs'),
   session: document.querySelector('#session'),
   group: document.querySelector('#group'),
+  observe: document.querySelector('#observe'),
+  observeToggle: document.querySelector('#observe-toggle'),
+  record: document.querySelector('#record'),
   capabilities: document.querySelector('#capabilities')
 };
 
@@ -48,6 +51,28 @@ function render(status) {
   fields.group.textContent = hasGroup
     ? `${group.title} (${group.mode}, ${session.tabIds?.length ?? 0} tabs)`
     : '-';
+  const observe = status.observe ?? {};
+  if (fields.observe) {
+    const parts = [
+      observe.enabled === false ? `paused (${observe.count ?? 0} steps)` : `recording (${observe.count ?? 0} steps)`
+    ];
+    if (typeof observe.dropped === 'number' && observe.dropped > 0) parts.push(`${observe.dropped} dropped`);
+    const lastTab = observe.lastTab?.title ?? observe.lastTab?.url;
+    if (lastTab) parts.push(`last: ${lastTab}`);
+    fields.observe.textContent = parts.join(' · ');
+  }
+  if (fields.observeToggle) {
+    fields.observeToggle.textContent = observe.enabled === false ? 'Resume observe' : 'Pause observe';
+  }
+  const record = status.record ?? null;
+  if (fields.record) {
+    if (!record) {
+      fields.record.textContent = 'no record yet — Save to start a file';
+    } else {
+      const file = typeof record.file === 'string' ? record.file.split(/[\\/]/).pop() : null;
+      fields.record.textContent = `written ${record.written ?? 0}${file ? ` · ${file}` : ''}`;
+    }
+  }
   fields.capabilities.textContent = JSON.stringify(status.capabilities ?? {}, null, 2);
 }
 
@@ -61,6 +86,17 @@ async function refresh() {
 
 document.querySelector('#disconnect').addEventListener('click', async () => {
   await send('browser_disconnect');
+  await refresh();
+});
+
+document.querySelector('#observe-toggle')?.addEventListener('click', async () => {
+  const current = await send('observe.get').catch(() => ({ enabled: true }));
+  await send('observe.setEnabled', { enabled: current?.enabled === false });
+  await refresh();
+});
+
+document.querySelector('#observe-save')?.addEventListener('click', async () => {
+  await send('observe.save');
   await refresh();
 });
 

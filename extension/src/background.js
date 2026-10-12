@@ -3,6 +3,8 @@ import { createPageEvaluator } from './evaluate.js';
 import { captureFullPage } from './screenshot.js';
 import { createNetworkMonitor } from './network-monitor.js';
 import { detectBrowser, createSessionManager, createFocusTracker, bridgeIdentity } from './session.js';
+import { createObserveBuffer } from './observe-buffer.js';
+import { observedNavigateToStep, routeObserveMessage, createNavDeduper } from './observe-route.js';
 
 const api = globalThis.browser ?? globalThis.chrome;
 const PORT = 9229;
@@ -20,6 +22,13 @@ const browser = detectBrowser(typeof navigator === 'undefined' ? '' : navigator.
 });
 const session = createSessionManager({ api, browser });
 const focus = createFocusTracker(api);
+const observeBuffer = createObserveBuffer({ emit });
+const navDeduper = createNavDeduper();
+// Last known server recording state, pushed by the server (record.state
+// events) and refreshed on every handshake. The popup reads it from
+// status.get — this is how it shows "written N" without a request path
+// to the server (the bridge only carries extension→server events).
+let cachedRecordState = null;
 
 async function attachSession(method, result) {
   if (method === 'browser_open') {
@@ -58,7 +67,18 @@ const router = createCommandRouter({
 function send(ws, payload) { ws.send(JSON.stringify(payload)); }
 
 function emit(method, params) {
-  if (connected && socket?.readyState === WebSocket.OPEN) send(socket, { type: 'event', method, params });
+  // Boolean reports delivery so the observe buffer can queue failed emits
+  // for resend() on reconnect. Callers ignore the return; only the buffer
+  // branches on it.
+  if (connected && socket?.readyState === WebSocket.OPEN) {
+    try {
+      send(socket, { type: 'event', method, params });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function failure(message, code = 'INVALID_ARGUMENT') {
@@ -392,6 +412,13 @@ function start() {
     const message = JSON.parse(event.data);
     if (message.type === 'handshake_ok') {
       connected = true;
+      if (message.recordState !== undefined) cachedRecordState = message.recordState;
+      observeBuffer.resend();
+      return;
+    }
+    if (message.type === 'event' && message.method === 'record.state') {
+      cachedRecordState = message.params ?? null;
+      api.runtime.sendMessage?.({ method: 'status.changed' })?.catch?.(() => {});
       return;
     }
     if (!message.id) return;
@@ -414,7 +441,16 @@ api.tabs.onRemoved?.addListener(async (tabId, removeInfo) => {
 
 api.tabs.onUpdated?.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading') emit('page.navigated', { tabId, url: changeInfo.url ?? tab.url ?? null, status: changeInfo.status });
-  if (changeInfo.status === 'complete') emit('tab.updated', { tabId, url: tab.url ?? null, title: tab.title ?? null, status: changeInfo.status });
+  if (changeInfo.status === 'complete') {
+    emit('tab.updated', { tabId, url: tab.url ?? null, title: tab.title ?? null, status: changeInfo.status });
+    const url = tab.url ?? changeInfo.url;
+    // Gate at the source: one browser_open per URL per tab. Subframe
+    // completions report the same navigation repeatedly.
+    if (url && navDeduper.shouldRecord(tabId, url)) {
+      const navStep = observedNavigateToStep(url);
+      if (navStep) observeBuffer.push(navStep, { tabUrl: url });
+    }
+  }
   if (changeInfo.groupId !== undefined) {
     await session.reconcile();
     api.runtime.sendMessage?.({ method: 'status.changed' })?.catch?.(() => {});
@@ -425,11 +461,25 @@ api.windows?.onFocusChanged?.addListener(() => {
   emit('window.focus', { focused: focus.focused, focusedWindowId: focus.windowId });
 });
 
-api.runtime.onMessage?.addListener(async message => {
+api.runtime.onMessage?.addListener(async (message, sender) => {
+  if (message?.method === 'observe.save') {
+    // A save that cannot reach the server must not clear the buffer: without
+    // this guard an offline Save would pause and wipe steps the server never
+    // saw (the resend queue keeps them, but the session boundary would lie).
+    if (!connected || socket?.readyState !== WebSocket.OPEN) {
+      return { saved: false, reason: 'not connected' };
+    }
+    const result = routeObserveMessage(message, observeBuffer, sender);
+    if (result?.saved) emit('observe.save', { count: result.count });
+    return result;
+  }
+  const observed = routeObserveMessage(message, observeBuffer, sender);
+  if (observed !== undefined) return observed;
   if (message?.method === 'status.get') {
     const info = await session.reconcile();
     router.adopt(info.tabIds);
     if (!identity) identity = (await bridgeIdentity(api, browser, session, focus)).identity;
+    const observeState = routeObserveMessage({ method: 'observe.get' }, observeBuffer);
     return {
       connected,
       instance: identity,
@@ -437,6 +487,8 @@ api.runtime.onMessage?.addListener(async message => {
       protocolVersion: 1,
       authorizedTabs: info.tabIds.length,
       session: info,
+      observe: observeState,
+      record: cachedRecordState,
       capabilities: {
         tabs: true,
         dom: true,

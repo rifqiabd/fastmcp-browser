@@ -7,6 +7,10 @@ export type RecordedStep = {
   params: Record<string, unknown>;
   replayable: boolean;
   reason?: string;
+  // Originating tab URL for passively observed steps (slice B1). Informational
+  // only: replay still pins to one tab, but the AI can see which page produced
+  // each step when a recording hops tabs.
+  tabUrl?: string;
   // Optional workflow annotations, written by hand or by the AI. They are not
   // produced by recording; they drive data-flow, loops and skill generation.
   label?: string;
@@ -171,6 +175,8 @@ export function parseRunFile(text: string): RecordedStep[] {
     const reason = checkReason(entry.reason, index);
     const step: RecordedStep = { method, params, replayable };
     if (reason) step.reason = reason;
+    const tabUrl = checkOptionalString(entry.tabUrl, index, 'tabUrl');
+    if (tabUrl) step.tabUrl = tabUrl;
     const label = checkOptionalString(entry.label, index, 'label');
     if (label) step.label = label;
     const capture = checkOptionalString(entry.capture, index, 'capture');

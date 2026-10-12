@@ -25,6 +25,7 @@ export type BrowserBridge = {
   instances(): InstanceInfo[];
   useInstance(id: string): { active: string; instances: InstanceInfo[] };
   control(name: string, params?: Record<string, unknown>): Promise<unknown>;
+  broadcastEvent(method: string, params?: Record<string, unknown>): void;
   close(): Promise<void>;
   token: string;
 };
@@ -33,6 +34,9 @@ export type BridgeOptions = {
   // Handles server-local control messages (e.g. recording start/stop) sent by
   // a peer CLI. It never reaches the extension.
   control?: (name: string, params: Record<string, unknown>) => unknown | Promise<unknown>;
+  // Snapshot of host-side state (e.g. recording status) attached to the
+  // extension handshake and available to broadcast subscribers.
+  getRecordState?: () => unknown;
 };
 
 type Connection = {
@@ -181,7 +185,12 @@ export function createBridge(port = 9229, configuredToken = process.env.FASTMCP_
             activeSocket = candidate;
             activeId = id;
           }
-          candidate.send(JSON.stringify({ type: 'handshake_ok', protocolVersion: 1 }));
+          const recordState = options.getRecordState?.();
+          candidate.send(JSON.stringify({
+            type: 'handshake_ok',
+            protocolVersion: 1,
+            ...(recordState === undefined ? {} : { recordState })
+          }));
           broadcastInstances();
           return;
         }
@@ -379,6 +388,19 @@ export function createBridge(port = 9229, configuredToken = process.env.FASTMCP_
       }
       if (!options.control) return Promise.reject(Object.assign(new Error(`Unknown control: ${name}`), { code: 'UNSUPPORTED_CAPABILITY' }));
       return Promise.resolve(options.control(name, params));
+    },
+    broadcastEvent(method, params = {}) {
+      // Host-to-extension fan-out (e.g. record.state). Peers are skipped:
+      // they already learn host state through bridge Calls and control.
+      if (mode !== 'host') return;
+      const raw = JSON.stringify({ type: 'event', method, params });
+      for (const connection of connections) {
+        try {
+          if (connection.socket.readyState === 1) connection.socket.send(raw);
+        } catch {
+          // A dead socket must not break the fan-out to the rest.
+        }
+      }
     },
     request(method, params = {}, timeoutMs = 15000) {
       if (mode === 'peer') {

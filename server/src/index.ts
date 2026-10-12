@@ -4,8 +4,21 @@ import { z } from 'zod';
 import { createBridge } from './bridge.js';
 import { TOOL_NAMES, TOOL_DOCS, callBrowserTool } from './tools.js';
 import { recordingStatus, startRecording, stopRecording } from './recorder.js';
+import { handleBridgeEvent } from './observe.js';
 
 const port = Number(process.env.FASTMCP_PORT ?? 9229);
+
+function recordState(): unknown {
+  return recordingStatus();
+}
+
+function broadcastRecordState(): void {
+  try {
+    bridge.broadcastEvent('record.state', recordState() as Record<string, unknown>);
+  } catch {
+    // Recording must never break the bridge.
+  }
+}
 
 function handleControl(name: string, params: Record<string, unknown>): unknown {
   if (name !== 'record') {
@@ -15,14 +28,32 @@ function handleControl(name: string, params: Record<string, unknown>): unknown {
   if (action === 'start') {
     const file = params.file;
     if (typeof file !== 'string' || !file) throw Object.assign(new Error('record start requires a file path'), { code: 'INVALID_ARGUMENT' });
-    return startRecording(file);
+    const result = startRecording(file);
+    broadcastRecordState();
+    return result;
   }
-  if (action === 'stop') return stopRecording();
+  if (action === 'stop') {
+    const result = stopRecording();
+    broadcastRecordState();
+    return result;
+  }
   if (action === 'status') return recordingStatus();
   throw Object.assign(new Error(`Unknown record action: ${action || '(none)'}`), { code: 'INVALID_ARGUMENT' });
 }
 
-const bridge = createBridge(port, undefined, { control: handleControl });
+const bridge = createBridge(port, undefined, { control: handleControl, getRecordState: recordState });
+// Passive observe-mode: extension emits observe.step (recorded when a file is
+// active) and observe.save (finalizes the session file).
+// Best-effort by design — recording must never break a tool call or event fan-out.
+bridge.onEvent(event => {
+  if (event?.method === 'observe.step' || event?.method === 'observe.save') {
+    void handleBridgeEvent(event)
+      .then(() => {
+        if (event?.method === 'observe.save') broadcastRecordState();
+      })
+      .catch(() => {});
+  }
+});
 const server = new McpServer({ name: 'fastmcp-browser', version: '0.4.2' });
 
 const tabId = z.number().int().optional().describe('Target browser tab ID.');

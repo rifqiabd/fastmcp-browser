@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fastmcp-browser": {
+      "command": "node",
+      "args": ["E:/tools/fastmcp-browser/server/dist/src/index.js"],
+      "env": { "FASTMCP_PORT": "9229" }
+    }
+  }
+}

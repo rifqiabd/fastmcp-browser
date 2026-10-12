@@ -122,6 +122,47 @@ test('bridge forwards authenticated extension events', async () => {
   socket.close();
   await bridge.close();
 });
+
+test('bridge broadcasts host events to connected extensions', async () => {
+  const port = nextPort++;
+  const bridge = createBridge(port, 'test-token');
+  const socket = await connect(port, 'test-token');
+  const received = new Promise<Record<string, unknown>>(resolve => {
+    socket.on('message', raw => {
+      const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (message.type === 'event') resolve(message);
+    });
+  });
+  bridge.broadcastEvent('record.state', { recording: true, written: 3 });
+  assert.deepEqual(await received, {
+    type: 'event',
+    method: 'record.state',
+    params: { recording: true, written: 3 }
+  });
+  socket.close();
+  await bridge.close();
+});
+
+test('bridge includes record state in the extension handshake', async () => {
+  const port = nextPort++;
+  const bridge = createBridge(port, 'test-token', {
+    getRecordState: () => ({ recording: true, written: 5 })
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', () => resolve());
+    socket.once('error', reject);
+  });
+  const hello = new Promise<Record<string, unknown>>(resolve => {
+    socket.once('message', raw => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+  });
+  socket.send(JSON.stringify({ type: 'handshake', token: 'test-token' }));
+  const message = await hello;
+  assert.equal(message.type, 'handshake_ok');
+  assert.deepEqual(message.recordState, { recording: true, written: 5 });
+  socket.close();
+  await bridge.close();
+});
 test('bridge rejects requests without a connection', async () => {
   const bridge = createBridge(nextPort++, 'test-token');
   await assert.rejects(bridge.request('browser_tabs'), error => (error as { code?: string }).code === 'NO_CONNECTION');

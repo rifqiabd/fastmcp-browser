@@ -46,6 +46,19 @@ async function copyContentEngine(out) {
   await writeFile(resolve(out, 'src/content/engine.js'), `(() => {\n${chunks.join('\n')}\n})();\n`);
 }
 
+async function copyContentObserver(out) {
+  const files = ['content/observer.js', 'content/observe-bootstrap.js'];
+  const chunks = [];
+  for (const file of files) {
+    let sourceText = await readFile(resolve(source, file), 'utf8');
+    sourceText = sourceText
+      .replace(/^import.*;\s*$/gm, '')
+      .replace(/^export /gm, '');
+    chunks.push(sourceText);
+  }
+  await writeFile(resolve(out, 'src/content/observe-content.js'), `(() => {\n${chunks.join('\n')}\n})();\n`);
+}
+
 async function build(target) {
   const out = resolve(distRoot, target);
   await rm(out, { recursive: true, force: true });
@@ -61,6 +74,9 @@ async function build(target) {
   await copyFile(resolve(source, 'adapters/runtime.js'), resolve(out, 'adapters/runtime.js'));
   await copyFile(resolve(source, `${target === 'firefox' ? 'adapters/firefox.js' : 'adapters/chromium.js'}`), resolve(out, `adapters/${target}.js`));
   await copyContentEngine(out);
+  await copyContentObserver(out);
+  await copyFile(resolve(source, 'observe-buffer.js'), resolve(out, 'observe-buffer.js'));
+  await copyFile(resolve(source, 'observe-route.js'), resolve(out, 'observe-route.js'));
   await copyFile(resolve(source, 'status.js'), resolve(out, 'status.js'));
   await copyFile(resolve(extension, 'status.html'), resolve(out, 'status.html'));
   await mkdir(resolve(out, 'icons'), { recursive: true });

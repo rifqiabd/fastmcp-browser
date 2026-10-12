@@ -13,6 +13,7 @@ const HELP = `Usage: node dist/src/cli.js <tool> [json-object]
        node dist/src/cli.js export <run.jsonl> [out.md]
        node dist/src/cli.js export --script <run.jsonl> [out.mjs] [--out <data>] [--format tsv|csv] [--wait-state dom_stable|network_idle|none]
        node dist/src/cli.js export --skill  <run.jsonl> <dir> [--name N] [--description D]
+       node dist/src/cli.js suggest-params <run.jsonl>
        node dist/src/cli.js record start <file.jsonl> | stop | status
 
 Call a tool through an already running FastMCP Browser bridge.
@@ -292,7 +293,16 @@ async function main(): Promise<void> {
       await runRecord(argv.slice(1), port, token, timeout);
       return;
     }
-    if (argv[0] === 'replay' || argv[0] === 'export' || argv[0] === 'record') {
+    if (argv[0] === 'suggest-params' && argv.length === 2) {
+      const { suggestPlaceholders } = await import('./paramsuggest.js');
+      const { suggestFormGroups } = await import('./formgroup.js');
+      const steps = parseRunFile(await readRun(argv[1]));
+      const suggestions = suggestPlaceholders(steps);
+      const formGroups = suggestFormGroups(steps);
+      process.stdout.write(`${JSON.stringify({ ok: true, result: { suggestions, count: suggestions.length, formGroups, formGroupCount: formGroups.length } })}\n`);
+      return;
+    }
+    if (argv[0] === 'replay' || argv[0] === 'export' || argv[0] === 'record' || argv[0] === 'suggest-params') {
       throw failure('INVALID_ARGUMENT', `Usage: ${argv[0]} ... (see --help)`);
     }
     const input = parseArgs(argv);
